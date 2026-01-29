@@ -1,0 +1,58 @@
+try {
+    var params = JSON.parse(value),
+        request = new HttpRequest(),
+        response,
+        session_token;
+
+    request.addHeader('Content-Type: application/json');
+    request.addHeader('App-Token: ' + params.zbx_app_token);
+    request.addHeader('Authorization: user_token ' + params.zbx_user_token);
+
+    // 1. Iniciar Sessão
+    response = request.get(params.zbx_url_glpi + '/initSession');
+    if (request.getStatus() !== 200) throw 'Erro initSession: ' + response;
+    session_token = JSON.parse(response).session_token;
+    request.addHeader('Session-Token: ' + session_token);
+
+    // Lógica baseada no valor do evento (1 = Problema, 0 = Resolvido)
+    if (params.zbx_event_value === '1') {
+        // --- ABERTURA DE TICKET ---
+        var ticketData = {
+            input: {
+                name: params.zbx_subject,
+                content: params.zbx_message,
+                status: 1, // Novo
+                urgency: 3
+            }
+        };
+        response = request.post(params.zbx_url_glpi + '/Ticket', JSON.stringify(ticketData));
+        if (request.getStatus() !== 201) throw 'Erro ao criar: ' + response;
+        
+        var ticketId = JSON.parse(response).id;
+        
+        // RETORNA TAG PARA O ZABBIX (Importante para o fechamento)
+        return JSON.stringify({ 'tags': { 'glpi_ticket_id': ticketId } });
+
+    } else if (params.zbx_event_value === '0' && params.event_tags) {
+        // --- FECHAMENTO DE TICKET ---
+        // Extrai o ID do ticket das tags do evento
+        var tags = JSON.parse(params.event_tags);
+        if (tags.glpi_ticket_id) {
+            var updateData = {
+                input: {
+                    id: tags.glpi_ticket_id,
+                    status: 6 // 6 = Fechado no GLPI
+                }
+            };
+            request.put(params.zbx_url_glpi + '/Ticket/' + tags.glpi_ticket_id, JSON.stringify(updateData));
+            return 'Ticket ' + tags.glpi_ticket_id + ' fechado com sucesso.';
+        }
+    }
+
+    request.get(params.zbx_url_glpi + '/killSession');
+    return 'Evento processado.';
+
+} catch (error) {
+    Zabbix.log(3, 'Erro GLPI: ' + error);
+    throw 'Falha: ' + error;
+}
